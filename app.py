@@ -173,7 +173,11 @@ def rank_compounds(compounds: List[Compound], toxicity_records: List[ToxicityRec
                 "score": score,
                 "efficacy": c.efficacy_signal,
                 "toxicity": toxicity,
+                # Compatibility alias for UIs expecting this key name.
+                "toxicity_risk": toxicity,
                 "agent_breakdown": breakdown,
+                # Compatibility alias for UIs expecting this key name.
+                "agents": breakdown,
             }
         )
 
