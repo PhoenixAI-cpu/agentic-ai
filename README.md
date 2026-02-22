@@ -7,5 +7,5 @@ Install dependencies and run the PHOENIX results display:
 
 ```bash
 pip install -r requirements.txt
-streamlit run streamlit_app.py
+python3 -m streamlit run streamlit_app.py
 ```
