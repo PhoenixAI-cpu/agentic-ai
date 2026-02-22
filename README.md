@@ -3,8 +3,9 @@ Agentic AI prototype demonstrating bayesian multi agent decision support for dru
 
 ## Streamlit UI
 
-Run the PHOENIX results display locally with:
+Install dependencies and run the PHOENIX results display:
 
 ```bash
+pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
