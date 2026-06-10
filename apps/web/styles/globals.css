@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+:root {
+  /* Brand */
+  --navy: #0A1B3D;
+  --navy-2: #0E2A55;
+  --blue: #1E6BE6;
+  --blue-deep: #0B3FA8;
+  --cyan: #1FB6D6;
+  --cyan-soft: #E6F7FB;
+
+  /* Surfaces */
+  --bg: #F5F8FC;
+  --panel: #FFFFFF;
+
+  /* Text */
+  --ink: #0C1A2E;
+  --slate: #5A6B82;
+  --faint: #8A99AD;
+
+  /* Borders */
+  --line: #E4EBF3;
+
+  /* Semantic */
+  --green: #16A375;
+  --amber: #D9962B;
+  --red: #E0524D;
+}
+
+@theme inline {
+  --color-navy: var(--navy);
+  --color-navy-2: var(--navy-2);
+  --color-blue: var(--blue);
+  --color-blue-deep: var(--blue-deep);
+  --color-cyan: var(--cyan);
+  --color-cyan-soft: var(--cyan-soft);
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-ink: var(--ink);
+  --color-slate: var(--slate);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-green: var(--green);
+  --color-amber: var(--amber);
+  --color-red: var(--red);
+  --font-display: var(--font-space-grotesk);
+  --font-body: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-inter), Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+}
