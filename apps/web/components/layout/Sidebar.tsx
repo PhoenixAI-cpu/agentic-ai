@@ -18,12 +18,13 @@ import {
   Database,
   Settings,
   Users,
+  type LucideIcon,
 } from 'lucide-react';
 
 interface NavItem {
   label: string;
   href: string;
-  icon: React.ElementType;
+  icon: LucideIcon;
 }
 
 interface NavSection {

@@ -1,12 +1,4 @@
-import dynamic from 'next/dynamic';
-
-const MoleculeViewer3D = dynamic(
-  () => import('@/components/molecules/MoleculeViewer3D').then((m) => m.MoleculeViewer3D),
-  {
-    ssr: false,
-    loading: () => <div className="w-[400px] h-[400px] bg-gray-100 rounded-xl animate-pulse" />,
-  }
-);
+import { MoleculeViewerLazy as MoleculeViewer3D } from '@/components/molecules/MoleculeViewerLazy';
 
 export const metadata = {
   title: 'Molecular Explorer — Antaria',

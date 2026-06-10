@@ -1,11 +1,11 @@
-import { AlertTriangle, TestTube, FileText, Lightbulb } from 'lucide-react';
+import { AlertTriangle, TestTube, FileText, Lightbulb, type LucideIcon } from 'lucide-react';
 import { AlertType } from '@/lib/types';
 
 interface Alert {
   type: AlertType;
   title: string;
   body: string;
-  icon: React.ElementType;
+  icon: LucideIcon;
   borderColor: string;
   iconColor: string;
   iconBg: string;

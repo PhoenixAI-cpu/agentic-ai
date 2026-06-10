@@ -5,6 +5,7 @@ import {
   BarChart2,
   ClipboardList,
   FileText,
+  type LucideIcon,
 } from 'lucide-react';
 import { AgentStatus } from '@/lib/types';
 
@@ -12,7 +13,7 @@ interface Agent {
   name: string;
   status: AgentStatus;
   lastRun: string;
-  icon: React.ElementType;
+  icon: LucideIcon;
 }
 
 const agents: Agent[] = [
