@@ -144,18 +144,166 @@ async def candidates_sample():
     return {"candidates": scored}
 
 
+# ---- Report helpers (Phase 8) ---------------------------------------------
+
+_SAMPLE_BY_ID = {c["id"]: c for c in SAMPLE_CANDIDATES}
+_FLAG_THRESHOLD = 0.55
+_DESCRIPTOR_THRESHOLDS = {
+    "logp": ("logP", 3.5, "exceeds recommended threshold of 3.5, increasing lipophilicity-related toxicity risk"),
+    "molecular_weight": ("molecular weight", 450, "exceeds 450 Da, raising metabolic burden and promiscuity concerns"),
+    "tpsa": ("TPSA", 140, "exceeds 140 A, predicting poor oral bioavailability"),
+    "rotatable_bonds": ("rotatable bonds", 10, "exceeds 10, reducing oral bioavailability per Veber rules"),
+    "hbd": ("H-bond donors", 5, "exceeds 5, impairing membrane permeability per Lipinski rules"),
+    "hba": ("H-bond acceptors", 10, "exceeds 10, reducing passive permeability"),
+}
+
+
+def _fmt_score(mean: float, ci_low: float, ci_high: float) -> str:
+    return f"{mean:.2f} (95% CI {ci_low:.2f}-{ci_high:.2f})"
+
+
+def _build_report(
+    project_name: str,
+    candidates_ids: list,
+    indication: str,
+    stage: str,
+    include_sections: list,
+) -> dict:
+    """Build a full Decision Intelligence report dict from scores."""
+    scored_list = []
+    for cid in candidates_ids:
+        cand = _SAMPLE_BY_ID.get(cid)
+        if cand is None:
+            cand = next((c for c in SAMPLE_CANDIDATES if cid.lower() in c["id"].lower()), None)
+        if cand is None:
+            scored_list.append({
+                "id": cid, "name": cid, "stage": stage,
+                "smiles": None, "overall": None,
+                "error": f"Candidate {cid} not found in sample set",
+            })
+            continue
+        scored_list.append(_score_one(cand))
+
+    scored_list.sort(
+        key=lambda r: r["overall"]["mean"] if r.get("overall") else -1.0,
+        reverse=True,
+    )
+
+    sections = {}
+
+    if "executive_summary" in include_sections:
+        top = next((r for r in scored_list if r.get("overall")), None)
+        if top:
+            ov = top["overall"]
+            top_conf = top.get("confidence_label", "Low")
+            score_str = _fmt_score(ov["mean"], ov["ci_low"], ov["ci_high"])
+            desc = top.get("descriptors", {})
+            if desc.get("molecular_weight", 0) > 450:
+                trade_off = "Lead optimisation to reduce molecular weight whilst preserving target binding is recommended."
+            elif desc.get("logp", 0) > 3.5:
+                trade_off = "Reduction of logP to below 3.5 is recommended to mitigate lipophilicity-related risks."
+            else:
+                trade_off = "The property profile is broadly favourable; further optimisation should focus on increasing confidence by tightening the credible interval."
+            flag_note = ""
+            if top.get("properties", {}).get("admet", {}).get("mean", 1.0) < _FLAG_THRESHOLD:
+                flag_note = " but carries an elevated ADMET flag"
+            elif top.get("properties", {}).get("safety", {}).get("mean", 1.0) < _FLAG_THRESHOLD:
+                flag_note = " but carries an elevated safety flag"
+            sections["executive_summary"] = (
+                f"{top['name']} scores highest overall ({score_str}){flag_note}. "
+                f"It leads the {len(scored_list)}-candidate set for the {indication} indication "
+                f"at the {stage} stage with {top_conf.lower()} model confidence. "
+                f"{trade_off}"
+            )
+        else:
+            sections["executive_summary"] = "No valid candidates could be scored for this report."
+
+    if "candidate_ranking" in include_sections:
+        ranking = []
+        for r in scored_list:
+            if not r.get("overall"):
+                ranking.append({"id": r["id"], "name": r["name"], "error": r.get("error"), "rationale": "Could not be scored."})
+                continue
+            ov = r["overall"]
+            props = r.get("properties", {})
+            prop_means = {k: props[k]["mean"] for k in ("efficacy", "safety", "admet", "developability") if k in props}
+            if prop_means:
+                best = max(prop_means, key=prop_means.get)
+                worst = min(prop_means, key=prop_means.get)
+                rationale = (f"Strongest axis is {best} ({prop_means[best]:.2f}); lowest axis is {worst} ({prop_means[worst]:.2f}), suggesting that {worst} optimisation would yield the largest score uplift.")
+            else:
+                rationale = "Insufficient data."
+            ranking.append({
+                "id": r["id"], "name": r["name"], "stage": r.get("stage") or stage,
+                "overall_score": {"mean": round(ov["mean"], 4), "ci_low": round(ov["ci_low"], 4), "ci_high": round(ov["ci_high"], 4)},
+                "confidence_label": r.get("confidence_label", "Low"),
+                "properties": {k: {"mean": round(props[k]["mean"], 4), "ci_low": round(props[k]["ci_low"], 4), "ci_high": round(props[k]["ci_high"], 4)} for k in ("efficacy", "safety", "admet", "developability") if k in props},
+                "rationale": rationale,
+            })
+        sections["candidate_ranking"] = ranking
+
+    if "safety_flags" in include_sections:
+        flags_by_candidate = {}
+        for r in scored_list:
+            if not r.get("overall"):
+                continue
+            props = r.get("properties", {})
+            desc = r.get("descriptors", {})
+            flags = []
+            for axis in ("efficacy", "safety", "admet", "developability"):
+                ax = props.get(axis, {})
+                mean_val = ax.get("mean", 1.0)
+                if mean_val < _FLAG_THRESHOLD:
+                    severity = "high" if mean_val < 0.4 else "medium"
+                    flags.append({"property": axis, "axis_score": round(mean_val, 4), "threshold": _FLAG_THRESHOLD, "severity": severity, "description": f"{axis.capitalize()} axis score {mean_val:.2f} is below the {_FLAG_THRESHOLD} flag threshold."})
+            for key, (label, thresh, msg) in _DESCRIPTOR_THRESHOLDS.items():
+                val = desc.get(key)
+                if val is not None and float(val) > thresh:
+                    flags.append({"property": label, "value": round(float(val), 2), "threshold": thresh, "severity": "high" if float(val) > thresh * 1.3 else "medium", "description": f"{r['name']}: {label} {float(val):.2f} {msg}"})
+            flags_by_candidate[r["name"]] = flags
+        sections["safety_flags"] = flags_by_candidate
+
+    if "trial_landscape" in include_sections:
+        sections["trial_landscape"] = (f"Live ClinicalTrials.gov integration scheduled for Phase 9. In a live report this section would enumerate active Phase II/III trials in {indication}, their primary endpoints, and key failure modes to avoid.")
+
+    if "recommendations" in include_sections:
+        recs = []
+        if scored_list and scored_list[0].get("overall"):
+            top = scored_list[0]
+            recs.append(f"Prioritise {top['name']} for next synthesis round — highest overall score ({top['overall']['mean']:.2f}) and {top.get('confidence_label', 'Low').lower()} model confidence.")
+        for r in scored_list:
+            if not r.get("properties"):
+                continue
+            fc = sum(1 for k in ("safety", "admet") if r["properties"].get(k, {}).get("mean", 1.0) < _FLAG_THRESHOLD)
+            if fc >= 1:
+                recs.append(f"Review {r['name']} safety and ADMET profile before progressing — {fc} flag{'s' if fc > 1 else ''} raised.")
+        if len(scored_list) > 1 and scored_list[-1].get("overall"):
+            last = scored_list[-1]
+            recs.append(f"Consider deprioritising {last['name']} — lowest overall score ({last['overall']['mean']:.2f}).")
+        recs.append(f"Expand the candidate set in the {indication} programme to tighten credible intervals.")
+        sections["recommendations"] = recs
+
+    sections["metadata"] = {
+        "project_name": project_name, "indication": indication, "stage": stage,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "engine_version": "v0",
+        "data_sources": ["RDKit descriptors", "Bayesian scoring model", "Sample SMILES — public structures"],
+    }
+
+    return {"project_name": project_name, "indication": indication, "stage": stage, "sections": sections, "candidate_ids": candidates_ids}
+
+
 @app.post("/report")
 def generate_report(request: ReportRequest):
-    """Structured evidence report — stub, to be implemented in Phase 8."""
-    sections = request.include_sections or [
-        "summary", "efficacy", "safety", "admet", "developability", "literature"
-    ]
-    return {
-        "candidate_id": request.candidate_id,
-        "status": "stub",
-        "message": "Report generation arrives in Phase 8 (ChEMBL/UniProt/PubMed evidence).",
-        "sections_requested": sections,
-    }
+    """Decision Intelligence Report — Phase 8."""
+    include_sections = request.include_sections or ["executive_summary", "candidate_ranking", "safety_flags", "trial_landscape", "recommendations"]
+    return _build_report(project_name=request.project_name, candidates_ids=request.candidates, indication=request.indication, stage=request.stage, include_sections=include_sections)
+
+
+@app.get("/reports/sample")
+def sample_report():
+    """Pre-generated sample report for Project APOLLO — for frontend demo."""
+    return _build_report(project_name="Project APOLLO", candidates_ids=["AX-7291", "AX-6104", "AX-5892"], indication="EGFR-driven non-small cell lung cancer", stage="Lead Optimisation", include_sections=["executive_summary", "candidate_ranking", "safety_flags", "trial_landscape", "recommendations"])
 
 
 # ---- Legacy endpoints (kept for backward compatibility) --------------------
