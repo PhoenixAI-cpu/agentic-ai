@@ -73,8 +73,8 @@ export default function AnaFullPage() {
             if (data === '[DONE]') continue;
             try {
               const parsed = JSON.parse(data);
-              if (parsed.delta) {
-                accumulated += parsed.delta;
+              if (parsed.text) {
+                accumulated += parsed.text;
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === anaId ? { ...m, content: accumulated } : m
@@ -162,10 +162,10 @@ export default function AnaFullPage() {
             </div>
             <div className="text-center">
               <p className="font-medium" style={{ color: 'var(--ink)', fontFamily: 'var(--font-space-grotesk)' }}>
-                How can I help you today?
+                Good morning. I am Ana, your scientific copilot in Antaria.
               </p>
               <p className="text-sm mt-1" style={{ color: 'var(--faint)' }}>
-                Ask me about molecules, targets, trials, or your discovery pipeline.
+                How can I assist your research today?
               </p>
             </div>
             <div className="flex flex-wrap gap-2 justify-center max-w-lg">
@@ -230,13 +230,13 @@ export default function AnaFullPage() {
                     ) : (
                       <ChevronRight size={12} />
                     )}
-                    Reasoning
+                    {expandedReasoning.has(msg.id) ? "Hide reasoning" : "Show reasoning"}
                   </button>
                   <span
                     className="px-2 py-0.5 rounded-full text-[10px] font-medium"
                     style={{ background: '#E8F8F3', color: 'var(--green)', fontFamily: 'var(--font-jetbrains-mono)' }}
                   >
-                    Confident
+                    Analysis complete
                   </span>
                   <span className="text-[10px]" style={{ color: 'var(--faint)' }}>
                     Sources: ChEMBL, UniProt, PubMed
@@ -247,10 +247,10 @@ export default function AnaFullPage() {
               {msg.role === 'assistant' && expandedReasoning.has(msg.id) && (
                 <div
                   className="text-xs rounded-xl px-4 py-3 border border-[var(--line)] max-w-full leading-relaxed"
-                  style={{ background: 'var(--bg)', color: 'var(--slate)', fontFamily: 'var(--font-inter)' }}
+                  style={{ background: 'var(--cyan-soft)', color: 'var(--slate)', fontFamily: 'var(--font-inter)' }}
                 >
                   <p className="font-semibold mb-1" style={{ color: 'var(--ink)' }}>Reasoning</p>
-                  Response synthesised from ChEMBL compound activity data, UniProt target annotations, and PubMed literature corpus. Bayesian confidence updated against available experimental evidence. Where primary data is unavailable, the response notes what would be retrieved and from which source.
+                  Ana analyses responses against available data sources. In a live session, this panel would show the specific data retrieved, assay IDs, confidence intervals, and the reasoning chain.
                 </div>
               )}
             </div>
@@ -279,8 +279,8 @@ export default function AnaFullPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask Ana anything... (Ctrl+Enter to send)"
-            rows={2}
+            placeholder="Ask Ana anything about your molecules, targets, or pipeline..."
+            rows={3}
             className="flex-1 resize-none bg-transparent text-sm focus:outline-none leading-relaxed"
             style={{ color: 'var(--ink)', fontFamily: 'var(--font-inter)' }}
             disabled={isStreaming}
