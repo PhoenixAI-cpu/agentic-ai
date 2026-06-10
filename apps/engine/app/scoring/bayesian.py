@@ -202,10 +202,77 @@ def _confidence_label(overall: PropertyScore) -> str:
     return "Low"
 
 
-def score_candidate(smiles: str, descriptors: Optional[dict] = None) -> CandidateScore:
-    """Score a candidate end-to-end from its SMILES string."""
+def score_candidate(
+    smiles: str,
+    descriptors: Optional[dict] = None,
+    enrich_with_chembl: Optional[str] = None,
+) -> CandidateScore:
+    """Score a candidate end-to-end from its SMILES string.
+
+    Args:
+        smiles: SMILES string of the candidate molecule.
+        descriptors: Pre-computed descriptor dict (optional).
+        enrich_with_chembl: ChEMBL ID to fetch bioactivity evidence for the
+            efficacy score. If provided and reachable, the top 3 IC50/Ki
+            values are added to the efficacy PropertyScore evidence list.
+            Scoring still works if this call fails or is omitted.
+    """
     d = descriptors if descriptors is not None else compute_descriptors(smiles)
     props = {name: score_property(d, name) for name in _RULE_FNS}
+
+    # Optional: enrich efficacy score with real bioactivity data from ChEMBL.
+    if enrich_with_chembl:
+        try:
+            import asyncio
+            from ..pipelines.chembl import ChEMBLPipeline
+
+            async def _fetch():
+                pipeline = ChEMBLPipeline()
+                return await pipeline.get_bioactivity(enrich_with_chembl)
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Inside an async context — use run_in_executor pattern
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(asyncio.run, _fetch())
+                        activities = future.result(timeout=10)
+                else:
+                    activities = loop.run_until_complete(_fetch())
+            except RuntimeError:
+                activities = asyncio.run(_fetch())
+
+            # Filter IC50/Ki records and take top 3 by value (lower = more potent)
+            potency_types = {"IC50", "Ki", "Kd", "EC50"}
+            potency = [
+                a for a in activities
+                if a.get("activity_type") in potency_types and a.get("value") is not None
+            ]
+            potency.sort(key=lambda a: float(a["value"]))
+            top3 = potency[:3]
+
+            bioactivity_evidence = [
+                {
+                    "rule": f"ChEMBL {a['activity_type']} ({a.get('target_pref_name', 'unknown target')})",
+                    "value": float(a["value"]),
+                    "satisfaction": 1.0,
+                    "weight": 0.0,  # informational only — does not shift the posterior
+                    "contribution": 0.0,
+                    "direction": "supports",
+                    "rationale": (
+                        f"{a['activity_type']}={a['value']} {a.get('units', 'nM')} "
+                        f"from assay {a.get('assay_chembl_id', 'N/A')}"
+                    ),
+                }
+                for a in top3
+            ]
+            if bioactivity_evidence:
+                props["efficacy"].evidence = bioactivity_evidence + props["efficacy"].evidence
+        except Exception:
+            # Enrichment is best-effort; never fail scoring because of it.
+            pass
+
     overall = _combine_overall(props)
     return CandidateScore(
         overall=overall,
