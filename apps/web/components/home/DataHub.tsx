@@ -1,5 +1,8 @@
-import { Upload } from 'lucide-react';
+'use client';
+
+import { useState } from 'react';
 import { DataFile, FileType } from '@/lib/types';
+import UploadDropzone from '@/components/data/UploadDropzone';
 
 const dataCounts = [
   { label: 'Datasets', value: 24 },
@@ -8,7 +11,7 @@ const dataCounts = [
   { label: 'Connections', value: 8 },
 ];
 
-const recentFiles: DataFile[] = [
+const sampleFiles: DataFile[] = [
   { name: 'compound_library_v3.sdf', type: 'SDF', addedAt: '3 hours ago' },
   { name: 'trial_outcomes_q4.csv', type: 'CSV', addedAt: 'Yesterday' },
   { name: 'uniprot_targets.xlsx', type: 'XLSX', addedAt: '2 days ago' },
@@ -25,6 +28,10 @@ const fileTypeStyles: Record<FileType, { bg: string; text: string }> = {
 };
 
 export default function DataHub() {
+  const [uploaded, setUploaded] = useState<DataFile[]>([]);
+
+  const recentFiles = [...uploaded, ...sampleFiles].slice(0, 5);
+
   return (
     <div className="mb-6">
       <div className="flex items-center justify-between mb-3">
@@ -71,7 +78,7 @@ export default function DataHub() {
               {recentFiles.map((file) => {
                 const fStyle = fileTypeStyles[file.type];
                 return (
-                  <li key={file.name} className="flex items-center gap-2">
+                  <li key={`${file.name}-${file.addedAt}`} className="flex items-center gap-2">
                     <span
                       className="px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0"
                       style={{ background: fStyle.bg, color: fStyle.text, fontFamily: 'var(--font-jetbrains-mono)' }}
@@ -94,7 +101,6 @@ export default function DataHub() {
           </div>
 
           {/* Upload area */}
-          {/* TODO: Wire up file upload to Supabase storage when credentials are configured */}
           <div className="p-4 flex flex-col">
             <p
               className="text-xs font-semibold uppercase tracking-wider mb-3"
@@ -102,18 +108,14 @@ export default function DataHub() {
             >
               Upload Files
             </p>
-            <div
-              className="flex-1 border-2 border-dashed rounded-xl flex flex-col items-center justify-center p-4 cursor-pointer hover:border-[var(--cyan)] transition-colors min-h-[100px]"
-              style={{ borderColor: 'var(--line)' }}
-            >
-              <Upload size={20} style={{ color: 'var(--faint)' }} className="mb-2" />
-              <p className="text-xs text-center" style={{ color: 'var(--slate)', fontFamily: 'var(--font-inter)' }}>
-                Drag and drop files here, or click to browse
-              </p>
-              <p className="text-[10px] text-center mt-1" style={{ color: 'var(--faint)' }}>
-                Supported: CSV, XLSX, PDF, SDF, FASTA
-              </p>
-            </div>
+            <UploadDropzone
+              onUploaded={(file) =>
+                setUploaded((prev) => [
+                  { name: file.name, type: file.type, addedAt: 'Just now' },
+                  ...prev,
+                ])
+              }
+            />
           </div>
         </div>
       </div>

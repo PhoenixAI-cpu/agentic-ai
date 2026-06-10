@@ -1,6 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { logEvent } from '@/lib/ledger';
+
+// Module-level flag: log the engine scoring event at most once per session.
+let engineEventLogged = false;
 
 export interface EnginePropertyScore {
   mean: number;
@@ -68,6 +72,16 @@ export function useEngineCandidates(): UseEngineResult {
         if (!cancelled && usable.length > 0) {
           setCandidates(usable);
           setIsLive(true);
+          if (!engineEventLogged) {
+            engineEventLogged = true;
+            void logEvent({
+              actor: 'Engine v0',
+              action: 'Scored candidate set',
+              subject: 'Sample candidates',
+              detail: { count: usable.length },
+              confidence: 'Bayesian 95% CI',
+            });
+          }
         }
       } catch {
         // Silent fallback — callers keep their static sample data.

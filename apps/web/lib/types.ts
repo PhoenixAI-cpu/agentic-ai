@@ -57,6 +57,17 @@ export interface Project {
   status: ProjectStatus;
 }
 
+export interface LedgerEvent {
+  id: string;
+  occurredAt: string;
+  actor: string;
+  action: string;
+  subject?: string;
+  detail?: Record<string, unknown>;
+  reasoning?: string;
+  confidence?: string;
+}
+
 export interface DataFile {
   name: string;
   type: FileType;

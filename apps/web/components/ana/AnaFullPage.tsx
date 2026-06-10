@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Paperclip, ChevronDown, ChevronRight } from 'lucide-react';
 import { AnaMessage } from '@/lib/types';
+import { logEvent } from '@/lib/ledger';
 
 const SUGGESTED_PROMPTS = [
   'Compare our lead against approved EGFR inhibitors',
@@ -86,6 +87,15 @@ export default function AnaFullPage() {
             }
           }
         }
+      }
+
+      if (accumulated) {
+        void logEvent({
+          actor: 'Ana',
+          action: 'Responded to query',
+          subject: text.slice(0, 80),
+          reasoning: 'Generated via Anthropic API with Antaria system prompt',
+        });
       }
     } catch {
       setMessages((prev) =>

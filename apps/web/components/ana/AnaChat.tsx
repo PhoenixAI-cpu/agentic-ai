@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { logEvent } from '@/lib/ledger';
 
 const SUGGESTED_PROMPTS = [
   'Compare our lead against approved EGFR inhibitors',
@@ -113,6 +114,15 @@ export default function AnaChat({ compact = false }: AnaChatProps) {
             }
           }
         }
+      }
+
+      if (accumulated) {
+        void logEvent({
+          actor: 'Ana',
+          action: 'Responded to query',
+          subject: text.slice(0, 80),
+          reasoning: 'Generated via Anthropic API with Antaria system prompt',
+        });
       }
     } catch {
       setMessages((prev) => prev.filter((m) => m.id !== anaId));
