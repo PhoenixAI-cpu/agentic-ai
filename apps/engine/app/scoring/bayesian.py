@@ -1,82 +1,215 @@
-"""
-Bayesian scoring module for Antaria.
+"""Bayesian candidate scoring with calibrated uncertainty.
 
-This stub returns sample Bayesian outputs with credible intervals.
-In production this will use:
-- RDKit molecular descriptors
-- ChEMBL bioactivity data for prior construction
-- ADMET predictions from in-house models
-- Bayesian hierarchical models for per-property scoring
+Approach: each property score is modelled as a Beta posterior. The prior is
+Beta(2, 2) (weakly informative, centred on 0.5). Evidence from molecular
+descriptors updates the posterior via pseudo-observations: each desirability
+rule contributes successes/failures weighted by rule reliability.
+This keeps the model fully interpretable — every score decomposes into
+named rules with stated weights.
 """
 
-import numpy as np
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from typing import Optional
 
+from scipy.stats import beta as beta_dist
 
-class BayesianScorer:
-    """
-    Bayesian ensemble scorer for drug-like molecules.
+from .descriptors import compute_descriptors
 
-    Produces overall confidence scores and per-property breakdowns,
-    each with a 95% credible interval derived from posterior distributions.
-    """
+# Weakly informative prior centred on 0.5.
+PRIOR_ALPHA = 2.0
+PRIOR_BETA = 2.0
 
-    def __init__(self, seed: int = 42):
-        self.rng = np.random.default_rng(seed)
+# Overall blend weights across the four property axes.
+OVERALL_WEIGHTS = {
+    "efficacy": 0.30,
+    "safety": 0.30,
+    "admet": 0.25,
+    "developability": 0.15,
+}
 
-    def _sample_posterior(self, mean: float, uncertainty: float, n: int = 1000) -> dict:
-        """Sample from a Beta-distributed posterior and return summary statistics."""
-        # Convert mean/uncertainty to Beta parameters
-        alpha = mean * (mean * (1 - mean) / uncertainty**2 - 1)
-        beta = (1 - mean) * (mean * (1 - mean) / uncertainty**2 - 1)
-        alpha = max(alpha, 0.1)
-        beta = max(beta, 0.1)
 
-        samples = self.rng.beta(alpha, beta, n)
+@dataclass
+class PropertyScore:
+    mean: float
+    ci_low: float
+    ci_high: float
+    evidence: list[dict] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
         return {
-            "mean": float(np.mean(samples)),
-            "ci_lower": float(np.percentile(samples, 2.5)),
-            "ci_upper": float(np.percentile(samples, 97.5)),
-            "std": float(np.std(samples)),
+            "mean": round(self.mean, 4),
+            "ci_low": round(self.ci_low, 4),
+            "ci_high": round(self.ci_high, 4),
+            "ci_width": round(self.ci_high - self.ci_low, 4),
+            "evidence": self.evidence,
         }
 
-    def score(
-        self,
-        smiles: str,
-        target_id: Optional[str] = None,
-        context: Optional[dict] = None,
-    ) -> dict:
-        """
-        Score a molecule. Currently returns sample data for API development.
 
-        In production, this will:
-        1. Parse SMILES with RDKit
-        2. Compute molecular descriptors
-        3. Query ChEMBL for analogues and bioactivity data
-        4. Run ADMET prediction models
-        5. Combine evidence via Bayesian hierarchical model
-        6. Return posterior distributions per property
-        """
-        # Sample data — replace with real inference in Phase 3
-        properties = {
-            "efficacy": self._sample_posterior(mean=0.82, uncertainty=0.08),
-            "safety": self._sample_posterior(mean=0.74, uncertainty=0.10),
-            "admet": self._sample_posterior(mean=0.79, uncertainty=0.07),
-            "developability": self._sample_posterior(mean=0.68, uncertainty=0.12),
-        }
+@dataclass
+class CandidateScore:
+    overall: PropertyScore
+    properties: dict[str, PropertyScore]
+    confidence_label: str
+    descriptors: dict
 
-        # Overall score: weighted geometric mean of property means
-        weights = {"efficacy": 0.35, "safety": 0.30, "admet": 0.20, "developability": 0.15}
-        overall = sum(
-            weights[k] * properties[k]["mean"] for k in weights
-        )
-
+    def to_dict(self) -> dict:
         return {
-            "smiles": smiles,
-            "target_id": target_id,
-            "overall_score": round(overall, 4),
-            "confidence": "High" if overall >= 0.75 else "Medium" if overall >= 0.60 else "Low",
-            "properties": properties,
-            "data_sources": ["ChEMBL (stub)", "UniProt (stub)", "Internal ADMET model (stub)"],
-            "note": "Sample data — real Bayesian inference will be implemented in Phase 3",
+            "overall": self.overall.to_dict(),
+            "confidence_label": self.confidence_label,
+            "properties": {k: v.to_dict() for k, v in self.properties.items()},
+            "descriptors": self.descriptors,
         }
+
+
+def _soft_le(value: float, threshold: float, width_frac: float = 0.10) -> float:
+    """Soft satisfaction in [0,1] for the rule `value <= threshold`.
+
+    A sigmoid ramp of width ~10% of the threshold gives ~1.0 well below the
+    threshold, 0.5 at it, and ~0.0 well above — so near-boundary molecules
+    contribute fractional evidence rather than a hard pass/fail.
+    """
+    width = max(abs(threshold) * width_frac, 1e-6)
+    k = 4.0 / width  # logistic slope so +/- width spans the ramp
+    return 1.0 / (1.0 + pow(2.718281828459045, k * (value - threshold)))
+
+
+def _soft_ge(value: float, threshold: float, width_frac: float = 0.10) -> float:
+    """Soft satisfaction in [0,1] for the rule `value >= threshold`."""
+    return 1.0 - _soft_le(value, threshold, width_frac)
+
+
+def _soft_between(value: float, low: float, high: float, width_frac: float = 0.10) -> float:
+    """Soft satisfaction for `low <= value <= high` (product of two ramps)."""
+    return _soft_ge(value, low, width_frac) * _soft_le(value, high, width_frac)
+
+
+def _scaled(value: float) -> float:
+    """Clamp an already-[0,1] descriptor (e.g. QED) to [0,1]."""
+    return max(0.0, min(1.0, value))
+
+
+# Each rule: (name, satisfaction in [0,1], weight, raw value, one-line rationale).
+def _efficacy_rules(d: dict) -> list[tuple]:
+    return [
+        ("QED drug-likeness", _scaled(d["qed"]), 3.0, d["qed"],
+         "Higher QED correlates with optimised, target-engaging chemical matter."),
+        ("Aromatic rings 1-4", _soft_between(d["aromatic_rings"], 1, 4), 1.0, d["aromatic_rings"],
+         "Aromatic scaffolds drive binding affinity but excess flatness hurts."),
+        ("TPSA 40-130", _soft_between(d["tpsa"], 40, 130), 1.0, d["tpsa"],
+         "Moderate polar surface area balances permeability and target contact."),
+    ]
+
+
+def _safety_rules(d: dict) -> list[tuple]:
+    return [
+        ("logP <= 3.5", _soft_le(d["logp"], 3.5), 2.0, d["logp"],
+         "High lipophilicity correlates with off-target and toxicity liabilities."),
+        ("MW <= 450", _soft_le(d["molecular_weight"], 450), 1.0, d["molecular_weight"],
+         "Lower molecular weight reduces promiscuity and metabolic burden."),
+        ("Aromatic rings <= 3", _soft_le(d["aromatic_rings"], 3), 1.0, d["aromatic_rings"],
+         "Excess aromatic ring count is a recognised toxicity risk factor."),
+    ]
+
+
+def _admet_rules(d: dict) -> list[tuple]:
+    return [
+        ("Lipinski MW <= 500", _soft_le(d["molecular_weight"], 500), 1.0, d["molecular_weight"],
+         "Lipinski: oral absorption falls off above 500 Da."),
+        ("Lipinski logP <= 5", _soft_le(d["logp"], 5), 1.0, d["logp"],
+         "Lipinski: logP above 5 impairs solubility and absorption."),
+        ("Lipinski HBD <= 5", _soft_le(d["hbd"], 5), 1.0, d["hbd"],
+         "Lipinski: excess H-bond donors reduce membrane permeability."),
+        ("Lipinski HBA <= 10", _soft_le(d["hba"], 10), 1.0, d["hba"],
+         "Lipinski: excess H-bond acceptors reduce passive permeability."),
+        ("TPSA <= 140", _soft_le(d["tpsa"], 140), 1.0, d["tpsa"],
+         "Veber: TPSA above 140 predicts poor oral bioavailability."),
+        ("Rotatable bonds <= 10", _soft_le(d["rotatable_bonds"], 10), 1.0, d["rotatable_bonds"],
+         "Veber: more than 10 rotatable bonds reduces oral bioavailability."),
+    ]
+
+
+def _developability_rules(d: dict) -> list[tuple]:
+    return [
+        ("QED drug-likeness", _scaled(d["qed"]), 2.0, d["qed"],
+         "High QED indicates a developable, well-balanced property profile."),
+        ("MW 200-500", _soft_between(d["molecular_weight"], 200, 500), 1.0, d["molecular_weight"],
+         "A mid-range molecular weight eases formulation and synthesis."),
+        ("Rotatable bonds <= 8", _soft_le(d["rotatable_bonds"], 8), 1.0, d["rotatable_bonds"],
+         "Lower flexibility improves crystallinity and developability."),
+    ]
+
+
+_RULE_FNS = {
+    "efficacy": _efficacy_rules,
+    "safety": _safety_rules,
+    "admet": _admet_rules,
+    "developability": _developability_rules,
+}
+
+
+def _posterior(alpha: float, beta: float) -> tuple[float, float, float]:
+    """Return (mean, 2.5% CI, 97.5% CI) of a Beta(alpha, beta) posterior."""
+    mean = alpha / (alpha + beta)
+    ci_low, ci_high = beta_dist.ppf([0.025, 0.975], alpha, beta)
+    return float(mean), float(ci_low), float(ci_high)
+
+
+def score_property(descriptors: dict, property_name: str) -> PropertyScore:
+    """Score a single property axis as a Beta posterior over the rules."""
+    if property_name not in _RULE_FNS:
+        raise ValueError(f"Unknown property: {property_name}")
+    alpha, beta = PRIOR_ALPHA, PRIOR_BETA
+    evidence: list[dict] = []
+    for name, sat, weight, raw, rationale in _RULE_FNS[property_name](descriptors):
+        # Fully satisfied rule adds `weight` to alpha (success); fully violated
+        # adds `weight` to beta (failure); fractional in between.
+        contribution = sat * weight
+        alpha += contribution
+        beta += (1.0 - sat) * weight
+        evidence.append({
+            "rule": name,
+            "value": round(float(raw), 3),
+            "satisfaction": round(float(sat), 3),
+            "weight": weight,
+            "contribution": round(float(contribution), 3),
+            "direction": "supports" if sat >= 0.5 else "detracts",
+            "rationale": rationale,
+        })
+    mean, ci_low, ci_high = _posterior(alpha, beta)
+    return PropertyScore(mean=mean, ci_low=ci_low, ci_high=ci_high, evidence=evidence)
+
+
+def _combine_overall(props: dict[str, PropertyScore]) -> PropertyScore:
+    """Weighted-mean blend of property posteriors with a combined CI.
+
+    Means combine via the fixed axis weights; the CI is the same weighted
+    blend of each axis's credible bounds (a transparent first-order combine).
+    """
+    mean = sum(OVERALL_WEIGHTS[k] * props[k].mean for k in OVERALL_WEIGHTS)
+    ci_low = sum(OVERALL_WEIGHTS[k] * props[k].ci_low for k in OVERALL_WEIGHTS)
+    ci_high = sum(OVERALL_WEIGHTS[k] * props[k].ci_high for k in OVERALL_WEIGHTS)
+    return PropertyScore(mean=mean, ci_low=ci_low, ci_high=ci_high, evidence=[])
+
+
+def _confidence_label(overall: PropertyScore) -> str:
+    width = overall.ci_high - overall.ci_low
+    if width < 0.25 and overall.mean > 0.7:
+        return "High"
+    if width < 0.35:
+        return "Medium"
+    return "Low"
+
+
+def score_candidate(smiles: str, descriptors: Optional[dict] = None) -> CandidateScore:
+    """Score a candidate end-to-end from its SMILES string."""
+    d = descriptors if descriptors is not None else compute_descriptors(smiles)
+    props = {name: score_property(d, name) for name in _RULE_FNS}
+    overall = _combine_overall(props)
+    return CandidateScore(
+        overall=overall,
+        properties=props,
+        confidence_label=_confidence_label(overall),
+        descriptors=d,
+    )

@@ -1,13 +1,18 @@
+'use client';
+
 import { ConfidenceLevel } from '@/lib/types';
+import { useEngineCandidates } from '@/lib/useEngine';
 
 interface Candidate {
   name: string;
   score: number;
   stage: string;
   confidence: ConfidenceLevel;
+  ciLow?: number;
+  ciHigh?: number;
 }
 
-const candidates: Candidate[] = [
+const sampleCandidates: Candidate[] = [
   { name: 'AX-7291', score: 0.84, stage: 'Lead Optimisation', confidence: 'High' },
   { name: 'AX-6104', score: 0.79, stage: 'Hit-to-Lead', confidence: 'High' },
   { name: 'AX-5892', score: 0.71, stage: 'Hit Identification', confidence: 'Medium' },
@@ -29,6 +34,19 @@ const scoreColor = (score: number) => {
 };
 
 export default function TopCandidatesTable() {
+  const { candidates: live, isLive } = useEngineCandidates();
+
+  const candidates: Candidate[] = isLive && live
+    ? live.map((c) => ({
+        name: c.name,
+        score: c.overall!.mean,
+        stage: c.stage ?? '—',
+        confidence: (c.confidence_label ?? 'Low') as ConfidenceLevel,
+        ciLow: c.overall!.ci_low,
+        ciHigh: c.overall!.ci_high,
+      }))
+    : sampleCandidates;
+
   return (
     <div className="mb-6">
       <div className="flex items-center justify-between mb-3">
@@ -38,7 +56,14 @@ export default function TopCandidatesTable() {
         >
           Top Candidates
         </h2>
-        <span className="text-xs" style={{ color: 'var(--faint)' }}>Sample data</span>
+        {isLive ? (
+          <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--green)' }}>
+            <span className="w-2 h-2 rounded-full" style={{ background: 'var(--green)' }} />
+            Live — engine v0
+          </span>
+        ) : (
+          <span className="text-xs" style={{ color: 'var(--faint)' }}>Sample data</span>
+        )}
       </div>
       <div
         className="rounded-xl border border-[var(--line)] overflow-hidden"
@@ -97,6 +122,14 @@ export default function TopCandidatesTable() {
                       >
                         {c.score.toFixed(2)}
                       </span>
+                      {c.ciLow !== undefined && c.ciHigh !== undefined && (
+                        <span
+                          className="text-xs"
+                          style={{ color: 'var(--faint)', fontFamily: 'var(--font-jetbrains-mono)' }}
+                        >
+                          ({c.ciLow.toFixed(2)}–{c.ciHigh.toFixed(2)})
+                        </span>
+                      )}
                       <div className="h-1.5 w-16 rounded-full" style={{ background: 'var(--bg)' }}>
                         <div
                           className="h-full rounded-full"
