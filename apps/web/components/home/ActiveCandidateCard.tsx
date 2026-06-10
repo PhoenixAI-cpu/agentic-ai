@@ -1,3 +1,13 @@
+import dynamic from 'next/dynamic';
+
+const MoleculeViewer3D = dynamic(
+  () => import('@/components/molecules/MoleculeViewer3D').then((m) => m.MoleculeViewer3D),
+  {
+    ssr: false,
+    loading: () => <div className="w-[260px] h-[260px] bg-gray-100 rounded-lg animate-pulse" />,
+  }
+);
+
 interface PropertyBar {
   label: string;
   value: number;
@@ -77,24 +87,9 @@ export default function ActiveCandidateCard() {
         </button>
       </div>
 
-      {/* Right: 3D viewer placeholder */}
-      <div
-        className="w-52 flex-shrink-0 rounded-xl flex flex-col items-center justify-center border border-dashed border-[var(--line)] min-h-[180px]"
-        style={{ background: 'var(--bg)' }}
-      >
-        {/* Three.js 3D viewer will be integrated in Phase 4 */}
-        <div className="w-12 h-12 rounded-full border-2 border-[var(--line)] flex items-center justify-center mb-2">
-          <div className="w-4 h-4 rounded-full" style={{ background: 'var(--faint)' }} />
-        </div>
-        <p className="text-xs text-center" style={{ color: 'var(--faint)', fontFamily: 'var(--font-inter)' }}>
-          3D Viewer
-        </p>
-        <p className="text-[10px] text-center mt-0.5" style={{ color: 'var(--faint)' }}>
-          Loading...
-        </p>
-        <p className="text-[9px] text-center mt-2 px-3" style={{ color: 'var(--line)' }}>
-          Three.js integration — Phase 4
-        </p>
+      {/* Right: 3D molecule viewer */}
+      <div className="flex-shrink-0">
+        <MoleculeViewer3D width={260} height={260} className="rounded-xl overflow-hidden" />
       </div>
     </div>
   );
