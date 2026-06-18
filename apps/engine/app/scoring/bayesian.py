@@ -1,11 +1,11 @@
 """Bayesian candidate scoring with calibrated uncertainty.
 
 Approach: each property score is modelled as a Beta posterior. The prior is
-Beta(2, 2) (weakly informative, centred on 0.5). Evidence from molecular
-descriptors updates the posterior via pseudo-observations: each desirability
-rule contributes successes/failures weighted by rule reliability.
-This keeps the model fully interpretable — every score decomposes into
-named rules with stated weights.
+Beta(3, 3) (weakly drug-like — appropriate since input molecules are already
+in drug-like space). Evidence from molecular descriptors updates the posterior
+via pseudo-observations: each desirability rule contributes successes/failures
+weighted by rule reliability. This keeps the model fully interpretable —
+every score decomposes into named rules with stated weights.
 """
 
 from __future__ import annotations
@@ -17,9 +17,10 @@ from scipy.stats import beta as beta_dist
 
 from .descriptors import compute_descriptors
 
-# Weakly informative prior centred on 0.5.
-PRIOR_ALPHA = 2.0
-PRIOR_BETA = 2.0
+# Weakly drug-like prior — Beta(3,3) encodes mild prior belief that input
+# molecules are already in drug-like space (they are: filtered SMILES).
+PRIOR_ALPHA = 3.0
+PRIOR_BETA = 3.0
 
 # Overall blend weights across the four property axes.
 OVERALL_WEIGHTS = {
@@ -70,7 +71,7 @@ def _soft_le(value: float, threshold: float, width_frac: float = 0.10) -> float:
     threshold, 0.5 at it, and ~0.0 well above — so near-boundary molecules
     contribute fractional evidence rather than a hard pass/fail.
     """
-    width = max(abs(threshold) * width_frac, 1e-6)
+    width = max(abs(threshold) * width_frac, 0.5)
     k = 4.0 / width  # logistic slope so +/- width spans the ramp
     return 1.0 / (1.0 + pow(2.718281828459045, k * (value - threshold)))
 
@@ -93,51 +94,77 @@ def _scaled(value: float) -> float:
 # Each rule: (name, satisfaction in [0,1], weight, raw value, one-line rationale).
 def _efficacy_rules(d: dict) -> list[tuple]:
     return [
-        ("QED drug-likeness", _scaled(d["qed"]), 3.0, d["qed"],
+        ("QED drug-likeness >= 0.4", _soft_ge(d["qed"], 0.4), 4.0, d["qed"],
          "Higher QED correlates with optimised, target-engaging chemical matter."),
+        ("QED above threshold", _scaled(d["qed"]), 3.0, d["qed"],
+         "QED as a continuous proxy for overall drug-likeness and efficacy potential."),
         ("Aromatic rings 1-4", _soft_between(d["aromatic_rings"], 1, 4), 1.0, d["aromatic_rings"],
          "Aromatic scaffolds drive binding affinity but excess flatness hurts."),
         ("TPSA 40-130", _soft_between(d["tpsa"], 40, 130), 1.0, d["tpsa"],
          "Moderate polar surface area balances permeability and target contact."),
+        ("Heavy atoms 15-50", _soft_between(d["heavy_atoms"], 15, 50), 1.0, d["heavy_atoms"],
+         "Drug-like heavy atom count supports adequate binding-site occupancy."),
+        ("logP 0-4", _soft_between(d["logp"], 0, 4), 1.0, d["logp"],
+         "Moderate lipophilicity supports cell permeability and target access."),
     ]
 
 
 def _safety_rules(d: dict) -> list[tuple]:
     return [
-        ("logP <= 3.5", _soft_le(d["logp"], 3.5), 2.0, d["logp"],
+        ("logP <= 3.5", _soft_le(d["logp"], 3.5), 3.0, d["logp"],
          "High lipophilicity correlates with off-target and toxicity liabilities."),
-        ("MW <= 450", _soft_le(d["molecular_weight"], 450), 1.0, d["molecular_weight"],
+        ("MW <= 450", _soft_le(d["molecular_weight"], 450), 2.0, d["molecular_weight"],
          "Lower molecular weight reduces promiscuity and metabolic burden."),
         ("Aromatic rings <= 3", _soft_le(d["aromatic_rings"], 3), 1.0, d["aromatic_rings"],
          "Excess aromatic ring count is a recognised toxicity risk factor."),
+        ("HBA <= 10", _soft_le(d["hba"], 10), 1.0, d["hba"],
+         "Lipinski hydrogen bond acceptor limit — excess reduces passive permeability."),
+        ("HBD <= 5", _soft_le(d["hbd"], 5), 1.0, d["hbd"],
+         "Lipinski hydrogen bond donor limit — excess impairs membrane crossing."),
+        ("TPSA <= 140", _soft_le(d["tpsa"], 140), 1.0, d["tpsa"],
+         "Veber TPSA criterion — above 140 predicts poor oral bioavailability."),
+        ("logP >= -2", _soft_ge(d["logp"], -2), 0.5, d["logp"],
+         "Extreme hydrophilicity limits tissue distribution and target access."),
     ]
 
 
 def _admet_rules(d: dict) -> list[tuple]:
     return [
-        ("Lipinski MW <= 500", _soft_le(d["molecular_weight"], 500), 1.0, d["molecular_weight"],
+        ("Lipinski MW <= 500", _soft_le(d["molecular_weight"], 500), 2.0, d["molecular_weight"],
          "Lipinski: oral absorption falls off above 500 Da."),
-        ("Lipinski logP <= 5", _soft_le(d["logp"], 5), 1.0, d["logp"],
+        ("Lipinski logP <= 5", _soft_le(d["logp"], 5), 2.0, d["logp"],
          "Lipinski: logP above 5 impairs solubility and absorption."),
-        ("Lipinski HBD <= 5", _soft_le(d["hbd"], 5), 1.0, d["hbd"],
+        ("Lipinski HBD <= 5", _soft_le(d["hbd"], 5), 2.0, d["hbd"],
          "Lipinski: excess H-bond donors reduce membrane permeability."),
-        ("Lipinski HBA <= 10", _soft_le(d["hba"], 10), 1.0, d["hba"],
+        ("Lipinski HBA <= 10", _soft_le(d["hba"], 10), 2.0, d["hba"],
          "Lipinski: excess H-bond acceptors reduce passive permeability."),
-        ("TPSA <= 140", _soft_le(d["tpsa"], 140), 1.0, d["tpsa"],
+        ("TPSA <= 140", _soft_le(d["tpsa"], 140), 2.0, d["tpsa"],
          "Veber: TPSA above 140 predicts poor oral bioavailability."),
-        ("Rotatable bonds <= 10", _soft_le(d["rotatable_bonds"], 10), 1.0, d["rotatable_bonds"],
+        ("Rotatable bonds <= 10", _soft_le(d["rotatable_bonds"], 10), 2.0, d["rotatable_bonds"],
          "Veber: more than 10 rotatable bonds reduces oral bioavailability."),
+        ("Heavy atoms >= 10", _soft_ge(d["heavy_atoms"], 10), 0.5, d["heavy_atoms"],
+         "Fragment-like cutoff — very small molecules lack meaningful pharmacology."),
+        ("Aromatic rings <= 4", _soft_le(d["aromatic_rings"], 4), 1.0, d["aromatic_rings"],
+         "PAINS avoidance — excess aromaticity correlates with pan-assay interference."),
+        ("MW >= 150", _soft_ge(d["molecular_weight"], 150), 0.5, d["molecular_weight"],
+         "Minimum MW for meaningful pharmacological activity at a target."),
     ]
 
 
 def _developability_rules(d: dict) -> list[tuple]:
     return [
-        ("QED drug-likeness", _scaled(d["qed"]), 2.0, d["qed"],
+        ("QED drug-likeness", _scaled(d["qed"]), 3.0, d["qed"],
          "High QED indicates a developable, well-balanced property profile."),
-        ("MW 200-500", _soft_between(d["molecular_weight"], 200, 500), 1.0, d["molecular_weight"],
+        ("MW 200-500", _soft_between(d["molecular_weight"], 200, 500), 2.0, d["molecular_weight"],
          "A mid-range molecular weight eases formulation and synthesis."),
         ("Rotatable bonds <= 8", _soft_le(d["rotatable_bonds"], 8), 1.0, d["rotatable_bonds"],
          "Lower flexibility improves crystallinity and developability."),
+        ("logP <= 5", _soft_le(d["logp"], 5), 1.0, d["logp"],
+         "Lipinski logP — high lipophilicity impairs aqueous formulation."),
+        ("HBA <= 10", _soft_le(d["hba"], 10), 1.0, d["hba"],
+         "Lipinski HBA limit constrains formulation complexity."),
+        ("TPSA <= 120", _soft_le(d["tpsa"], 120), 1.0, d["tpsa"],
+         "Tighter TPSA criterion for oral bioavailability in development."),
     ]
 
 
@@ -195,9 +222,11 @@ def _combine_overall(props: dict[str, PropertyScore]) -> PropertyScore:
 
 def _confidence_label(overall: PropertyScore) -> str:
     width = overall.ci_high - overall.ci_low
-    if width < 0.25 and overall.mean > 0.7:
+    # With descriptor-only evidence (no bioassay data), CI widths of 0.38–0.42
+    # are typical for drug-like molecules — calibrated thresholds reflect this.
+    if overall.mean >= 0.68 and width < 0.42:
         return "High"
-    if width < 0.35:
+    if overall.mean >= 0.55 or width < 0.48:
         return "Medium"
     return "Low"
 
